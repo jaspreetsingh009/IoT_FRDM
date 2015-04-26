@@ -1,0 +1,1275 @@
+<!DOCTYPE HTML>
+ <html>
+   <head>    
+	<link rel="stylesheet" href="http://code.jquery.com/ui/1.9.2/themes/base/jquery-ui.css" />
+	<style>
+		body {
+			margin       :  0px;
+			padding      :  0px;
+			 }
+		#rtxData {
+			float        :  left;
+			margin-left  :  20px;
+			margin-right :  auto;
+			margin-top   :  25px;
+			width        :  448px;
+		}
+	
+		#gPanel{
+			float        :  left;
+			margin-left  :  15px;
+			margin-right :  auto;
+			margin-top   :  25px;
+			width        :  425px;
+		}
+		
+		#wPanel{
+			float        :  left;
+			margin-left  :  15px;
+			margin-top   :  25px;
+			margin-right :  auto;
+			width        :  250px;
+		}
+		
+		h2{
+			text-align   :  center;
+		}
+	
+		#btnHolder {
+			text-align   :  center;
+		}
+		
+		#accordion .ui-accordion-content { padding: 0; }
+		
+	</style>
+
+	<script src="http://code.jquery.com/jquery-1.8.3.js"></script>
+	<script src="http://code.jquery.com/ui/1.9.2/jquery-ui.js"></script>
+	<script src="/socket.io/socket.io.js"></script>
+	<script src="smoothie.js"></script>
+	<script src="gauge.min.js"></script>
+
+	<script>
+		
+		window.requestAnimFrame = (function(callback) {	
+			return window.requestAnimationFrame    || 
+				window.webkitRequestAnimationFrame || 
+				window.mozRequestAnimationFrame    || 
+				window.oRequestAnimationFrame      || 
+				window.msRequestAnimationFrame     ||
+			
+			function(callback) 
+			{
+				window.setTimeout(callback, 1000 / 30);  // 30 frames per second
+			};
+		})();
+
+		// Global Variables
+		var iosocket; 
+		var switchStatus = "", lastCommand = "";
+
+		var accDataX =  0, accDataY =  0, accDataZ =  0;		
+		var data1    =  0, data2    =  0, data3    =  0;		
+		var graph1   = -1, graph2   = -1, graph3   = -1;
+
+		var timeOutArray  =  new Array();
+		var alertArray    =  new Array();
+		var analogmult    =  new Array(1, 1, 1, 1, 1, 1, 1, 1, 1);
+		var analogData    =  new Array(0, 0, 0, 0, 0, 0, 0, 0, 0);
+		var toggleVal     =  new Array(0, 0, 0, 0, 0, 0, 0, 0);
+		var pwmCounter    =  new Array(-1, -1, -1)
+
+		function addStatus(status)  //Add Status to the CommandLine
+		{
+			document.getElementById("txtArea").value += status + "\n";
+			document.getElementById("txtArea").scrollTop = document.getElementById("txtArea").scrollHeight;
+		}
+
+		function initSlider() //Initialize PWM Sliders
+		{
+			 $( "#slider" ).slider({
+				 min:0,
+				 max:100,
+				 change: function(event,ui) 
+				 {
+					 if(pwmCounter[0] >= 0) { 
+						 sendIOPacket('p',pwmCounter[0],ui.value);
+					 }
+					 document.getElementById("sliderTxt").value = ui.value;
+				 }
+			 });
+			 
+			 $( "#slider2" ).slider({
+				 min:0,
+				 max:100,
+				 change: function(event,ui) 
+				 {
+					 if(pwmCounter[1] >= 0) { 
+						 sendIOPacket('p',pwmCounter[1],ui.value);
+					 }
+					 document.getElementById("sliderTxt2").value = ui.value;
+				 }
+			 });
+			 
+			 $( "#slider3" ).slider({
+				 min:0,
+				 max:100,
+				 change: function(event,ui) 
+				 {
+					 if(pwmCounter[2]>= 0) { 
+						 sendIOPacket('p',pwmCounter[2],ui.value);
+					 }
+					 document.getElementById("sliderTxt3").value = ui.value;
+				 }
+			 });
+		}
+						
+		function initGraph1()  //Initialize Graph 1
+		{
+			var smoothie1 = new SmoothieChart(
+							{
+								grid: { strokeStyle:'rgb(0, 120, 0)', fillStyle:'rgb(0, 0, 0)',
+								lineWidth: 1, millisPerLine: 1000, verticalSections: 5, }
+							});
+			
+			var plot1 = new TimeSeries();
+			
+			smoothie1.streamTo(document.getElementById("myGraph1"));
+			smoothie1.addTimeSeries(plot1, { strokeStyle:'rgb(0, 255, 0)', lineWidth:2 });
+			
+			setInterval(function() {
+						plot1.append(new Date().getTime(), Number(data1) );
+				}, 100);
+		}
+
+		function initGraph2()
+		{
+			var smoothie2 = new SmoothieChart(
+							{
+								grid: { strokeStyle:'rgb(0, 120, 0)', fillStyle:'rgb(0, 0, 0)',
+								lineWidth: 1, millisPerLine: 1000, verticalSections: 5, }
+							});
+							
+			var plot2 = new TimeSeries();
+			
+			smoothie2.streamTo(document.getElementById("myGraph2"));
+			smoothie2.addTimeSeries(plot2, { strokeStyle:'rgb(0, 0, 255)', lineWidth:2 });
+			
+			setInterval(function() {
+						plot2.append(new Date().getTime(), Number(data2) );
+				}, 100);
+		}
+
+		function initGraph3()
+		{
+			var smoothie3 = new SmoothieChart(
+							{
+								grid: { strokeStyle:'rgb(0, 120, 0)', fillStyle:'rgb(0, 0, 0)',
+								lineWidth: 1, millisPerLine: 1000, verticalSections: 5, }
+							});
+							
+			var plot3 = new TimeSeries();
+			
+			smoothie3.streamTo(document.getElementById("myGraph3"));
+			smoothie3.addTimeSeries(plot3, { strokeStyle:'rgb(255, 0, 0)', lineWidth:2 });
+			
+			setInterval(function() {
+						plot3.append(new Date().getTime(), Number(data3) );
+				}, 100);
+		}
+
+		function initSocketIO()  //Intialize WebSockets : Acquire DATA
+		{
+			iosocket = io.connect();
+			iosocket.on('onconnection', function(value) {
+				initButton();
+				initSlider();
+								
+				iosocket.on('updateData', function (recievedData) 
+				{
+					var tempData = recievedData.pollOneValue;  //receivedData
+					var ch = -1;
+					
+					analogData[0]  = document.getElementById("Ch0");
+					analogData[1]  = document.getElementById("Ch1");
+					analogData[2]  = document.getElementById("Ch2");
+					analogData[3]  = document.getElementById("Ch3");
+					analogData[4]  = document.getElementById("Ch4");
+					analogData[5]  = document.getElementById("Ch5");
+					analogData[6]  = document.getElementById("Ch6");
+					analogData[7]  = document.getElementById("Ch7");
+					analogData[8]  = document.getElementById("Ch8");
+					
+					switch (tempData[tempData.length-1]) {
+						case 'A' :  ch = 0; break;
+						case 'B' :  ch = 1; break;
+						case 'C' :  ch = 2; break;
+						case 'D' :  ch = 3; break;
+						case 'E' :  ch = 4; break;
+						case 'F' :  ch = 5; break;
+						case 'X' :  ch = 6; break;
+						case 'Y' :  ch = 7; break;
+						case 'Z' :  ch = 8; break;
+						default  :  break;
+					}
+					
+					if(ch != -1) {
+						tempData = tempData.substring(0, tempData.length - 1);
+						if(ch != 6 && ch != 7 && ch != 8) {
+							var temp = Number(tempData) * Number(analogmult[ch]) * 0.00005035477 ;
+						}
+						
+						else {
+							var temp = Number(tempData) * Number(analogmult[ch]);
+						}
+						analogData[ch].value = parseFloat((temp).toFixed(3));
+					}
+					
+					switch(graph1) {
+						case '0'  :  window.data1 = document.getElementById("Ch0").value; break;
+						case '1'  :  window.data1 = document.getElementById("Ch1").value; break; 
+						case '2'  :  window.data1 = document.getElementById("Ch2").value; break; 
+						case '3'  :  window.data1 = document.getElementById("Ch3").value; break; 
+						case '4'  :  window.data1 = document.getElementById("Ch4").value; break;
+						case '5'  :  window.data1 = document.getElementById("Ch5").value; break;
+						case '6'  :  window.data1 = document.getElementById("Ch6").value; break;
+						case '7'  :  window.data1 = document.getElementById("Ch7").value; break;
+						case '8'  :  window.data1 = document.getElementById("Ch8").value; break;  
+						default :  break;
+					}
+					
+					switch(graph2) {
+						case '0'  :  window.data2 = document.getElementById("Ch0").value; break;
+						case '1'  :  window.data2 = document.getElementById("Ch1").value; break; 
+						case '2'  :  window.data2 = document.getElementById("Ch2").value; break; 
+						case '3'  :  window.data2 = document.getElementById("Ch3").value; break; 
+						case '4'  :  window.data2 = document.getElementById("Ch4").value; break;
+						case '5'  :  window.data2 = document.getElementById("Ch5").value; break; 
+						case '6'  :  window.data2 = document.getElementById("Ch6").value; break;
+						case '7'  :  window.data2 = document.getElementById("Ch7").value; break;
+						case '8'  :  window.data2 = document.getElementById("Ch8").value; break;  
+						default :  break;
+					}
+					
+					switch(graph3) {
+						case '0'  :  window.data3 = document.getElementById("Ch0").value; break;
+						case '1'  :  window.data3 = document.getElementById("Ch1").value; break; 
+						case '2'  :  window.data3 = document.getElementById("Ch2").value; break; 
+						case '3'  :  window.data3 = document.getElementById("Ch3").value; break; 
+						case '4'  :  window.data3 = document.getElementById("Ch4").value; break;
+						case '5'  :  window.data3 = document.getElementById("Ch5").value; break; 
+						case '6'  :  window.data3 = document.getElementById("Ch6").value; break;
+						case '7'  :  window.data3 = document.getElementById("Ch7").value; break;
+						case '8'  :  window.data3 = document.getElementById("Ch8").value; break;  
+						default :  break;
+					}
+					
+					document.getElementById("gData1").value = window.data1;
+					document.getElementById("gData2").value = window.data2;
+					document.getElementById("gData3").value = window.data3;
+				});
+			});
+		}
+
+		function createAlert(input, output, minimum, maximum, sMode, msg, alertMode) //Create Alert
+		{
+			var Amode;
+			var alertFlag = 0;
+			var mode = 0;
+			
+			if(alertMode == 0) {
+				Amode = "ONE-SHOT";
+			}
+			
+			else if(alertMode == 1) {
+				Amode = "AUTO";
+			}
+			
+			if(sMode == "ON") {
+				mode = 1;
+			}
+			
+			else if(sMode == "OFF") {
+				mode = 0;
+			}
+			 
+			addStatus("Alert Created: IN: " + input + " OUT:" + output + " Range: " + minimum + " to " + maximum + " sMode: " + sMode + " alertMode: " + Amode);
+			
+			var timeOutId = setInterval(function() 
+							{
+									var cVal;
+									var timerId = timeOutId;
+									switch(input.toUpperCase())
+									{
+										case "CH0" : cval = Number(document.getElementById("Ch0").value);
+													 break;
+										case "CH1" : cval = Number(document.getElementById("Ch1").value);
+													 break;
+										case "CH2" : cval = Number(document.getElementById("Ch2").value);
+													 break;
+										case "CH3" : cval = Number(document.getElementById("Ch3").value);
+													 break;
+										case "CH4" : cval = Number(document.getElementById("Ch4").value);
+													 break;
+										case "CH5" : cval = Number(document.getElementById("Ch5").value);
+													 break;
+										default    : break;
+									}
+									
+									var line1  =  output;
+									var outCh  =  /P([-+]?[0-9]*\.?[0-9]*)/; 
+									 
+									if(line1.match(outCh) != null) { 
+										var outChID  =  line1.match(outCh)[1];	 
+										if(outChID == "") {
+											addStatus("Invalid Channel option");
+											return;
+										}
+									}
+									  
+									else {
+										  addStatus("Invalid arguments!");
+										  return;
+									}
+									
+									if( cval < minimum)
+									{	
+										if(alertMode == 1)
+										{
+											if(alertFlag == 0)
+											{
+												sendIOPacket('s', outChID, mode);
+												addStatus("Alert flag raised on \"" + input + "\" Lower Limit violation " + msg);
+												addStatus("Output: " + output + " Status: " + sMode)
+												alertFlag = 1;
+											}
+										}
+										
+										if(alertMode == 0)
+										{
+											sendIOPacket('s', outChID, mode);
+											addStatus("Alert flag raised on \"" + input + "\" Lower Limit violation " + msg);
+											addStatus("Output: " + output + " Status: " + sMode)
+											addStatus("Alert ID \"" + timerId + "\" cleared : FLAG RAISED");								 
+											alertArray.splice(timeOutArray.indexOf(timerId), 1);
+											timeOutArray.splice(timeOutArray.indexOf(timerId), 1);
+											clearInterval(timerId);
+										}
+									}
+									
+									else if(cval > maximum) 
+									{										
+										if(alertMode == 1)
+										{
+											if(alertFlag == 0)
+											{
+												sendIOPacket('s', outChID, mode);
+												addStatus("Alert flag raised on \"" + input + "\" Upper Limit violation " + msg);
+												addStatus("Output: " + output + " Status: " + sMode);
+												alertFlag = 1;
+											}
+										}
+										
+										if(alertMode == 0)
+										{
+											sendIOPacket('s', outChID, mode);
+											addStatus("Output: " + output + " Status: " + sMode)
+											addStatus("Alert flag raised on \"" + input + "\" Upper Limit violation " + msg);
+											addStatus("Alert ID \"" + timerId + "\" cleared : FLAG RAISED"); 
+											alertArray.splice(timeOutArray.indexOf(timerId), 1);
+											timeOutArray.splice(timeOutArray.indexOf(timerId), 1);
+											clearInterval(timerId);
+										}
+									}
+							
+									else
+									{	
+										if(alertFlag == 1)
+										{
+											addStatus("Alert flag CLEAR on \"" + input + "\" Inputs in RANGE " + msg);
+											
+											if(sMode == "ON") {
+												addStatus("Output: " + output + " Status: " + "OFF");
+											}
+											
+											else {
+												addStatus("Output: " + output + " Status: " + "ON");
+											}
+											
+											sendIOPacket('s', outChID, !mode);											
+											alertFlag = 0;
+										}
+									} 
+							}, 1000);	
+							
+				timeOutArray.push(timeOutId);
+				alertArray.push("IN: " + input + " OUT:" + output + " Range: " + minimum + " to " + maximum + " sMode: " + sMode + " alertMode: " + Amode );
+		}
+
+		function clearTimeOut(id) //Manual Clear an Alert
+		{
+			if (typeof timeOutArray[id] !== 'undefined') {
+				addStatus("Alert ID \"" + timeOutArray[id] + "\" cleared : MANUAL CLEAR");
+				clearInterval(timeOutArray[id]);
+				
+				alertArray.splice(id, 1);
+				timeOutArray.splice(id,1)
+			}
+			
+			else {
+				addStatus("Error: Incorrect Id or No active alerts");
+			}
+		}
+
+		function displayTimeOut() //Display all the alerts along with Alert ID
+		{
+			if(alertArray.length == 0)
+			{
+				addStatus("No active alerts found!");
+			}
+			
+			var k;
+			
+			for(k=0; k<alertArray.length; k++)
+			{
+				addStatus(k + " :: " + alertArray[k] + "::" + timeOutArray[k]);
+			}
+		}
+				
+		function sendIOPacket(cmd, channel, value)
+		{
+			var sendArray = new Array();
+			var dutyCheck = 0;				
+			sendArray[0] = cmd;
+			
+			if(parseInt(channel/10 != 0)) {
+				sendArray.push(parseInt(channel/10));
+			}
+			
+			sendArray.push(channel%10);
+			sendArray.push('X');
+			
+			if(parseInt(value/100) != 0) {
+				sendArray.push(parseInt(value/100));
+				value = parseInt(value%100);
+				dutyCheck = 1;
+			}
+			
+			if(parseInt(value/10) != 0 || dutyCheck == 1) {
+				sendArray.push(parseInt(value/10));
+			}
+			
+			sendArray.push(value%10);
+			
+			for(var i=0; i<sendArray.length; i++) {
+				iosocket.emit('buttonval', sendArray[i]);
+			}
+			
+			iosocket.emit('buttonval', '\r');
+			iosocket.emit('buttonval', '\n');
+		}
+
+		function handle(e)  //CommandLine Function
+		{	
+			var keyCode = e.keyCode || e.which;
+			
+			if(keyCode == 38)
+			{
+				document.getElementById("cmdText").value = lastCommand;
+			}
+			
+			if(keyCode == 40)
+			{
+				document.getElementById("cmdText").value = "";
+			}
+			
+			if (keyCode == 13)
+			{
+				var command = document.getElementById("cmdText").value;
+				command = command.replace(/\s{2,}/g, ' ');
+				
+				var cmdArray = command.split(" ");
+				lastCommand = command;
+				document.getElementById("cmdText").value = "";
+				
+				switch(cmdArray[0].toUpperCase())
+				{					
+					case "ALERT"  : switch(cmdArray[1].toUpperCase())
+									{
+										case "HELP"  :  addStatus("ALERT ADD: creates an alert");
+														addStatus("eg. alert add in:Ch1 out:P0 min:0 max:100 msg:a1");
+														addStatus("eg. alert add in:Ch5 out:P1 min:0 alertMode:auto");
+														addStatus("eg. alert add in:Ch5 out:P1 min:0 sMode:OFF");
+														addStatus("ALERT DISPLAY: displays all active alerts with IDs");
+														addStatus("eg. alert display");
+														addStatus("ALERT DELETE: manually clear an alert");
+														addStatus("eg. alert delete <ID>");
+														break;
+										
+										case "DISPLAY": displayTimeOut();														 
+														break;
+										
+										case "DELETE" :	var delID = cmdArray[2];
+														if(delID > alertArray.length || delID < 0)
+														{
+															addStatus("Invalid Delete ID: OUT OF RANGE");
+														}
+														
+														else { clearTimeOut(Number(cmdArray[2])); }
+														
+														break;
+														
+										case "ADD" :    var line = 	command;
+														var re1 = /in:(\w+)/;
+														var re2 = /out:(\w+)/;
+														var re3 = /min:([-+]?[0-9]*\.?[0-9]*)/;
+														var re4 = /max:([-+]?[0-9]*\.?[0-9]*)/;
+														var re5 = /sMode:(\w+)/;
+														var re6 = /msg:(\w+)/;
+														var re7 = /alertMode:(\w+)/;
+														
+														var input, output, minimum, maximum, sMode;
+														var msg = "";
+														var alertMode = 0;
+														 
+														if(line.match(re1)  !=  null)  { input  =  line.match(re1)[1];  }
+														if(line.match(re2) !=  null)   { output =  line.match(re2)[1]; }
+														else { output = "null"; }
+														 
+														if(line.match(re3) !=  null)  { minimum = line.match(re3)[1]; }
+														else { minimum = 0 ;}
+														  
+														if(line.match(re4)  !=  null)  { maximum = line.match(re4)[1]; }
+														else { maximum = 4095; }
+														  
+														if(line.match(re5)  !=  null)  { sMode  =  line.match(re5)[1]; }
+														else { sMode = "ON"; }
+														
+														if(line.match(re6) != null) { msg  = line.match(re6)[1]; }
+														
+														if(line.match(re7) !=  null)  { 
+															var temp = line.match(re7)[1];
+															if(temp.toUpperCase() == "AUTO") {
+																alertMode = 1;
+															} 
+														}
+														else { alertMode = 0; }
+														
+														sMode = sMode.toUpperCase();
+														createAlert(input, output, minimum, maximum, sMode, msg, alertMode); 
+														
+														break;
+											
+										default : addStatus("Invalid ALERT argument"); 
+												  break;
+									}							
+														 
+									break;
+
+					case "ASSIGN" : var line1  =  cmdArray[1].toUpperCase();
+									var line2  =  cmdArray[2].toUpperCase();
+									var slider =  /S([-+]?[0-9]*\.?[0-9]*)/;
+									var outCh  =  /P([-+]?[0-9]*\.?[0-9]*)/; 
+									 
+									if(line1.match(slider) !=  null && line2.match(outCh) != null)
+									{ 
+										 var sliderID  =  line1.match(slider)[1];
+										 var outChID   =  line2.match(outCh)[1];
+										 
+										 if(sliderID != "" && outChID != "") 
+										 {
+											pwmCounter[sliderID] = outChID;   
+											addStatus("Output P" + outChID + " assigned to Slider #" + sliderID);
+										 }
+										 
+										 else {
+											 addStatus("Invalid arguments!");
+										 }
+									}
+									 
+									else {
+										 addStatus("Invalid arguments!");
+									}
+									
+									break;
+									
+					case "STATUS" : addStatus("Switch Status:");
+									addStatus("Ch1 : " + switchStatus[0] + " " + switchValue[0] + "\tCh2 : " + switchStatus[1] + " " + switchValue[1] );
+									addStatus("Ch3 : " + switchStatus[2] + " " + switchValue[2] + "\tCh4 : " + switchStatus[3] + " " + switchValue[3] );
+									addStatus("Ch5 : " + switchStatus[4] + " " + switchValue[4] + "\tCh6 : " + switchStatus[5] + " " + switchValue[5] );
+									addStatus("Ch7 : " + switchStatus[6] + " " + switchValue[6] + "\tCh8 : " + switchStatus[7] + " " + switchValue[7] );
+									break;
+									
+					case "PLOT" :   var line1  =  cmdArray[2].toUpperCase();
+									var inCh  =  /CH([-+]?[0-9]*\.?[0-9]*)/; 
+					 
+									if(line1.match(inCh) != null)
+									{ 
+										var inChID   =  line1.match(inCh)[1];
+										if(isNaN(inChID)){
+											addStatus("Channel ID Must be a Numeric Value");
+											break;
+										}
+									}
+									
+									else {
+										addStatus("Invalid arguments");
+										break;
+									}
+									
+									switch(cmdArray[1].toUpperCase())
+									{
+										case 'GRAPH1' :  window.graph1 = inChID;
+														 addStatus("Graph1 assigned to Ch" + inChID);									
+														 break;
+										case 'GRAPH2' :  window.graph2 = inChID;	
+														 addStatus("Graph2 assigned to Ch" + inChID);										 
+														 break;
+										case 'GRAPH3' :  window.graph3 = inChID;
+														 addStatus("Graph3 assigned to Ch" + inChID);											 
+														 break;		   
+										default       :  addStatus("Invalid graph option");
+														 break;
+									}
+								  
+									break;
+								  
+					case "MULT" : if(isNaN(cmdArray[2])) {
+									  addStatus("Multiplier must be a number");
+									  break;
+								  }
+								  
+								  else {
+									  var line1  =  cmdArray[1].toUpperCase();
+									  var inCh  =  /CH([-+]?[0-9]*\.?[0-9]*)/; 
+					 
+									  if(line1.match(inCh) != null)
+									  {	
+											if(line1.match(inCh)[1] == ""){
+												addStatus("Invalid Channel ID");
+												break;
+											}
+											
+											else{
+												var inChID  =  line1.match(inCh)[1];
+												analogmult[Number(inChID)] = Number(cmdArray[2]);
+												addStatus("CH" + inChID + " multiplier set to " + analogmult[Number(inChID)] ) //Jaspreet
+											}		
+									  }
+								  
+									  else {
+										  addStatus("Invalid arguments");
+									  }
+								  }
+								 
+								  break;
+								  
+					case "CLEAR": document.getElementById("txtArea").value = "";
+								  break;
+								  
+					case "PWM"  : if(isNaN(cmdArray[2])) {
+									  addStatus("Duty must be numeric value");
+								  }
+								  
+								  else if(cmdArray[2] < 0 || cmdArray[2] > 100) {
+									  addStatus("Duty value must be between 0 to 100");
+								  }
+					
+								  else {
+									  var line1  =  cmdArray[1].toUpperCase();
+									  var outCh  =  /P([-+]?[0-9]*\.?[0-9]*)/; 
+									 
+									  if(line1.match(outCh) != null)
+									  { 
+											 var outChID   =  line1.match(outCh)[1];
+											 
+											 if(outChID != "") {
+												sendIOPacket('p', outChID, cmdArray[2]);
+												addStatus("Output P" + outChID + " assigned to PWM with duty " + cmdArray[2] + "%");
+											 }
+											 
+											 else {
+												addStatus("Invalid Channel option");
+											 }
+									  }
+									  
+									  else {
+										  addStatus("Invalid arguments!");
+									  }
+								  }
+								  
+								  break;
+								  
+					case "HELP" : addStatus("Valid Options:");
+								  addStatus("RX     : Start/ON  | Stop/OFF");
+								  addStatus("switch : Channel   | ON/OFF  :: eg. switch P0 ON");
+								  addStatus("mult   : Channel   | value   :: eg. mult Ch1 1.23");
+								  addStatus("plot   : GraphNum  | Channel :: eg. plot graph1 Ch1");
+								  addStatus("pwm    : Channel   | %Duty   :: eg. pwm P1 50" );
+								  addStatus("assign : SliderNum | Channel :: eg. assign S1 P0" );	
+								  addStatus("alert  : DISPLAY   | ADD  | DELETE | HELP" );
+								  addStatus("status / clear / help" );			
+								  break;
+								  
+					case "RX" : switch(cmdArray[1].toUpperCase())
+								{
+									case 'START' : case 'ON' : iosocket.emit('buttonval', 'Z');
+															   iosocket.emit('buttonval', '\r');
+															   iosocket.emit('buttonval', '\n');
+															   addStatus("UART Reception started");
+															   break;
+									case 'STOP'  : case 'OFF': iosocket.emit('buttonval', 'z');
+															   iosocket.emit('buttonval', '\r');
+															   iosocket.emit('buttonval', '\n');
+									default      : addStatus("Invalid RX Option");
+												   break;
+								}	
+								
+								break;
+								
+					case "SWITCH":  var value = 0;
+					
+									switch(cmdArray[2].toUpperCase())
+									{
+										case 'ON'  :  value = 1;
+													  break;
+										case 'OFF' :  value = 0;
+													  break;
+										default    :  break;
+									}
+									
+									var line1  =  cmdArray[1].toUpperCase();
+									var outCh  =  /P([-+]?[0-9]*\.?[0-9]*)/; 
+									 
+									if(line1.match(outCh) != null)
+									{ 
+										var outChID   =  line1.match(outCh)[1];
+										 
+										if(outChID != "") {
+											sendIOPacket('s', outChID, value);
+											addStatus("Output P" + outChID + " turned " + cmdArray[2].toUpperCase());
+										}
+											 
+										else {
+											addStatus("Invalid Channel option");
+										}
+									}
+									  
+									else {
+										addStatus("Invalid arguments!");
+									}				
+									break;
+					
+					default : addStatus("Invalid input. Use \"help\" to display all valid options");
+							  break;
+				}
+			}
+			
+			return false;
+		}
+		   
+		function initButton()  {     //Initialize switches
+		   $( "#check1"  ).button();
+		   $( "#check2"  ).button();
+		   $( "#check3"  ).button();
+		   $( "#check4"  ).button();
+		   $( "#check5"  ).button();
+		   $( "#check6"  ).button();
+		   $( "#check7"  ).button();
+		   $( "#check8"  ).button();
+		   $( "#check9"  ).button();
+		   $( "#check10" ).button();
+		}
+
+		function initStatusBar() {
+			  document.getElementById("txtArea").value = "";
+			  addStatus("Valid Options:");
+			  addStatus("RX     : Start/ON  | Stop/OFF");
+			  addStatus("switch : Channel   | ON/OFF  :: eg. switch P0 ON");
+			  addStatus("mult   : Channel   | value   :: eg. mult Ch1 1.23");
+			  addStatus("plot   : GraphNum  | Channel :: eg. plot graph1 Ch1");
+			  addStatus("pwm    : Channel   | %Duty   :: eg. pwm P1 50" );
+			  addStatus("assign : SliderNum | Channel :: eg. assign S1 P0" );	
+			  addStatus("alert  : DISPLAY   | ADD  | DELETE | HELP" );
+			  addStatus("status / clear / help" );	
+		}
+		
+		window.onload = function() {
+			 initSocketIO();
+			 initGraph1();
+			 initGraph2();
+			 initGraph3();
+			 initStatusBar();
+			 showGauge1();
+			 showGauge2(); 
+			 showGauge3(); 
+			 showGauge4(); 
+			 showGauge5(); 
+			 showGauge6();
+			  
+			 $(function() {
+				$( "#accordion" ).accordion({
+					heightStyle: "content"
+				});
+			 });
+		};
+		  
+		$(document).ready(function() {
+			 $('#check1').click(function() {
+				toggleVal[0] += 1;
+				toggleVal[0] %= 2;   //Either '0' or '1'
+				sendIOPacket('s',0,toggleVal[0]);
+			  });
+			  
+			  $('#check2').click(function() {
+				toggleVal[1] += 1;
+				toggleVal[1] %= 2;
+				sendIOPacket('s',1,toggleVal[1]);
+			  });
+			  
+			  $('#check3').click(function() {
+				toggleVal[2] += 1;
+				toggleVal[2] %= 2;
+				sendIOPacket('s',2,toggleVal[2]);
+			  });
+			  
+			  $('#check4').click(function() {
+				toggleVal[3] += 1;
+				toggleVal[3] %= 2;
+				sendIOPacket('s',3,toggleVal[3]);
+			  });
+			  
+			  $('#check5').click(function() {
+				toggleVal[4] += 1;
+				toggleVal[4] %= 2;
+				sendIOPacket('s',4,toggleVal[4]);
+			  });
+			 
+			  $('#check6').click(function() {
+				toggleVal[5] += 1;
+				toggleVal[5] %= 2;
+				sendIOPacket('s',5,toggleVal[5]);
+			  });
+			  
+			  $('#check7').click(function() {
+				toggleVal[6] += 1;
+				toggleVal[6] %= 2;
+				sendIOPacket('s',6,toggleVal[6]);
+			  });
+			  
+			  $('#check8').click(function() {
+				toggleVal[7] += 1;
+				toggleVal[7] %= 2;
+				sendIOPacket('s',7,toggleVal[7]);
+			  });
+			  
+			  $('#check9').click(function() {
+				toggleVal[8] += 1;
+				toggleVal[8] %= 2;
+				sendIOPacket('s',8,toggleVal[8]);
+			  });
+			  
+			  $('#check10').click(function() {
+				toggleVal[9] += 1;
+				toggleVal[9] %= 2;
+				sendIOPacket('s',9,toggleVal[9]);
+			  });
+		});
+
+		function showGauge1() {
+			var gauge = new Gauge({
+			renderTo : 'gauge1',
+			width : 160,
+			height : 160,
+			glow : true,
+			units : 'Temp.(C)',
+			title : false,
+			minValue : -20,
+			maxValue :  80,
+			majorTicks : ['-20','-10','0','10','20','30','40','50','60','70','80'],
+			minorTicks : 2,
+			strokeTicks : false,
+			highlights : [
+				{ from : -20, to : 30, color : 'rgba(0, 255, 0, .15)'   },
+				{ from :  30, to : 50, color : 'rgba(255, 255, 0, .15)' },
+				{ from :  50, to : 80, color : 'rgba(255, 30, 0, .25)'  },
+			],
+			
+			colors : {
+				plate : '#223',
+				majorTicks : '#f5f5f5',
+				minorTicks : '#ddd',
+				title : '#fff',
+				units : '#ccc',
+				numbers : '#eee',
+				needle : { start : 'rgba(240, 128, 128, 1)', end : 'rgba(255, 160, 122, .9)' }
+			}
+			});
+
+			gauge.onready = function() {
+				setInterval( function() {
+				gauge.setValue(Number(document.getElementById("Ch2").value));
+				}, 800);
+			};
+
+			gauge.draw();
+		};
+
+		function showGauge2() {
+				var gauge = new Gauge({
+				renderTo : 'gauge2',
+				width : 160,
+				height : 160,
+				glow : true,
+				units : 'HI300.(V)',
+				title : false,
+				minValue :  0.0,
+				maxValue :  3.0,
+				majorTicks : ['0.0','0.5','1.0','1.5','2.0','2.5','3.0'],
+				minorTicks : 2,
+				strokeTicks : false,
+				highlights : [
+					{ from :  0.0, to : 1.5, color : 'rgba(0, 255, 0, .15)'   },
+					{ from :  1.5, to : 2.5, color : 'rgba(255, 255, 0, .15)' },
+					{ from :  2.5, to : 3.0, color : 'rgba(255, 30, 0, .25)'  },
+				],
+				
+				colors : {
+					plate : '#222',
+					majorTicks : '#f5f5f5',
+					minorTicks : '#ddd',
+					title : '#fff',
+					units : '#ccc',
+					numbers : '#eee',
+					needle : { start : 'rgba(240, 128, 128, 1)', end : 'rgba(255, 160, 122, .9)' }
+				}
+				});
+
+				gauge.onready = function() {
+					setInterval( function() {
+					gauge.setValue( Number(document.getElementById("Ch1").value) );
+					}, 800);
+				};
+
+				gauge.draw();
+		};
+
+		function showGauge3() {
+				var gauge = new Gauge({
+				renderTo : 'gauge3',
+				width : 160,
+				height : 160,
+				glow : true,
+				units : 'LDR.(V)',
+				title : false,
+				minValue :  0.0,
+				maxValue :  3.0,
+				majorTicks : ['0.0','0.5','1.0','1.5','2.0','2.5','3.0'],
+				minorTicks : 2,
+				strokeTicks : false,
+				highlights : [
+					{ from :  0.0, to : 1.5, color : 'rgba(0, 255, 0, .15)'   },
+					{ from :  1.5, to : 2.5, color : 'rgba(255, 255, 0, .15)' },
+					{ from :  2.5, to : 3.0, color : 'rgba(255, 30, 0, .25)'  },
+				],
+				
+				colors : {
+					plate : '#222',
+					majorTicks : '#f5f5f5',
+					minorTicks : '#ddd',
+					title : '#fff',
+					units : '#ccc',
+					numbers : '#eee',
+					needle : { start : 'rgba(240, 128, 128, 1)', end : 'rgba(255, 160, 122, .9)' }
+				}
+				});
+
+				gauge.onready = function() {
+					setInterval( function() {
+					gauge.setValue( Number(document.getElementById("Ch0").value) );
+					}, 800);
+				};
+
+				gauge.draw();
+		};
+
+		function showGauge4() {
+				var gauge = new Gauge({
+				renderTo : 'gauge4',
+				width : 160,
+				height : 160,
+				glow : true,
+				units : 'MQ2 Smoke.(V)',
+				title : false,
+				minValue :  0.0,
+				maxValue :  3.0,
+				majorTicks : ['0.0','0.5','1.0','1.5','2.0','2.5','3.0'],
+				minorTicks : 2,
+				strokeTicks : false,
+				highlights : [
+					{ from :  0.0, to : 1.5, color : 'rgba(0, 255, 0, .15)'   },
+					{ from :  1.5, to : 2.5, color : 'rgba(255, 255, 0, .15)' },
+					{ from :  2.5, to : 3.0, color : 'rgba(255, 30, 0, .25)'  },
+				],
+				
+				colors : {
+					plate : '#222',
+					majorTicks : '#f5f5f5',
+					minorTicks : '#ddd',
+					title : '#fff',
+					units : '#ccc',
+					numbers : '#eee',
+					needle : { start : 'rgba(240, 128, 128, 1)', end : 'rgba(255, 160, 122, .9)' }
+				}
+				});
+
+				gauge.onready = function() {
+					setInterval( function() {
+					gauge.setValue( Number(document.getElementById("Ch3").value) );
+					}, 800);
+				};
+
+				gauge.draw();
+		};
+	
+		function showGauge5() {
+				var gauge = new Gauge({
+				renderTo : 'gauge5',
+				width : 160,
+				height : 160,
+				glow : true,
+				units : 'Volt.(V)',
+				title : false,
+				minValue :  0.0,
+				maxValue :  3.0,
+				majorTicks : ['0.0','0.5','1.0','1.5','2.0','2.5','3.0'],
+				minorTicks : 2,
+				strokeTicks : false,
+				highlights : [
+					{ from :  0.0, to : 1.5, color : 'rgba(0, 255, 0, .15)'   },
+					{ from :  1.5, to : 2.5, color : 'rgba(255, 255, 0, .15)' },
+					{ from :  2.5, to : 3.0, color : 'rgba(255, 30, 0, .25)'  },
+				],
+				
+				colors : {
+					plate : '#222',
+					majorTicks : '#f5f5f5',
+					minorTicks : '#ddd',
+					title : '#fff',
+					units : '#ccc',
+					numbers : '#eee',
+					needle : { start : 'rgba(240, 128, 128, 1)', end : 'rgba(255, 160, 122, .9)' }
+				}
+				});
+
+				gauge.onready = function() {
+					setInterval( function() {
+					gauge.setValue( Number(document.getElementById("Ch4").value) );
+					}, 800);
+				};
+
+				gauge.draw();
+		};
+	
+		function showGauge6() {
+				var gauge = new Gauge({
+				renderTo : 'gauge6',
+				width : 160,
+				height : 160,
+				glow : true,
+				units : 'Volt.(V)',
+				title : false,
+				minValue :  0.0,
+				maxValue :  3.0,
+				majorTicks : ['0.0','0.5','1.0','1.5','2.0','2.5','3.0'],
+				minorTicks : 2,
+				strokeTicks : false,
+				highlights : [
+					{ from :  0.0, to : 1.5, color : 'rgba(0, 255, 0, .15)'   },
+					{ from :  1.5, to : 2.5, color : 'rgba(255, 255, 0, .15)' },
+					{ from :  2.5, to : 3.0, color : 'rgba(255, 30, 0, .25)'  },
+				],
+				
+				colors : {
+					plate : '#222',
+					majorTicks : '#f5f5f5',
+					minorTicks : '#ddd',
+					title : '#fff',
+					units : '#ccc',
+					numbers : '#eee',
+					needle : { start : 'rgba(240, 128, 128, 1)', end : 'rgba(255, 160, 122, .9)' }
+				}
+				});
+
+				gauge.onready = function() {
+					setInterval( function() {
+					gauge.setValue( Number(document.getElementById("Ch5").value) );
+					}, 800);
+				};
+
+				gauge.draw();
+		};
+	
+	</script>
+	
+  </head>
+  <body>
+	<div id="rtxData" >  			   
+	<div id="div1"
+	<div id="div1"
+		style= "background: #fff6cc;
+				border-radius: 6px;
+				border: 1px solid #ffd100;
+				color: #000;
+				padding: 0px 10px 10px 28px;
+				background-size:100%;
+				height:315px"
+	>  
+	
+	<h2>Data from MCU</h2>
+			<p style="color:blue; margin-left:0px">ADC Data:</p>
+		<div id="AnalogData1" style="width: 50%; float:left">
+			<p style="display:inline">Channel 0:</p> &nbsp <input type="text" id = "Ch0" style="width:80px"/>
+			<hr style="height:0pt; visibility:hidden; margin-bottom:4px;" />
+			<p style="display:inline">Channel 2:</p> &nbsp <input type="text" id = "Ch2" style="width:80px"/> 
+			<hr style="height:0pt; visibility:hidden; margin-bottom:4px;" />
+			<p style="display:inline">Channel 4:</p> &nbsp <input type="text" id = "Ch4" style="width:80px"/><br><br>
+			<hr style="height:0pt; visibility:hidden; margin-bottom:1px;" />
+		</div>
+		<div id="AnalogData2" style="width: 50%; float:left">
+			<p style="display:inline">Channel 1:</p> &nbsp <input type="text" id = "Ch1" style="width:80px"/> 
+			<hr style="height:0pt; visibility:hidden; margin-bottom:4px;" />
+			<p style="display:inline">Channel 3:</p> &nbsp <input type="text" id = "Ch3" style="width:80px"/>
+			<hr style="height:0pt; visibility:hidden; margin-bottom:4px;" />
+			<p style="display:inline">Channel 5:</p> &nbsp <input type="text" id = "Ch5" style="width:80px"/> <br><br>
+			<hr style="height:0pt; visibility:hidden; margin-bottom:1px;" />
+		</div>
+		<div id="AccData">
+			<p style="color:blue">Accelerometer Data:</p>
+			<p style="display:inline">X:</p> &nbsp <input type="text" id = "Ch6" style="width:77px"/> &nbsp &nbsp
+			<p style="display:inline">Y:</p> &nbsp <input type="text" id = "Ch7" style="width:77px"/> &nbsp &nbsp
+			<p style="display:inline">Z:</p> &nbsp <input type="text" id = "Ch8" style="width:77px"/> &nbsp &nbsp
+			<br>
+		</div>		
+	</div>
+	<br>
+	<textarea id  = "txtArea" cols='51' rows='45' 
+					style = "background: #ffffff;
+							 border-radius: 6px;
+							 border: 1px solid #ffd100;
+							 color: #000;
+							 padding: 5px 5px 5px 18px;
+							 background-size:100%;
+							 font-size: 10pt;
+							 resize: none;
+							 height:179px;">	
+			</textarea>
+			
+			<hr style="height:0pt; visibility:hidden; margin-bottom:0px;"/>
+			<form action="#" style="align:center;">
+				<p style="display:inline">Enter Command:</p> &nbsp <input type="text" id = "cmdText" style = "width:262px;" onkeypress="handle(event)"/>
+			</form>
+	<br>
+  </div> 	
+ 
+  <div id="gPanel" >    
+	
+	<div id="div1"
+		style= "border-radius: 6px;
+				border: 1px solid #ffd100;
+				color: #000;
+				padding: 1px 10px 10px 28px;
+				background-size:100%;
+				height:560px"
+	>  
+	
+	<h2>Realtime Plots</h2>
+		<div align="center">
+			
+			<p style="display:inline;">Graph 1:</p> <input type="text" id="gData1" style="width:70px; margin-left:10px" />
+			<div align="center" id="gPanel1" style="margin-top:0px; margin-left: -17px;"> <br>
+				<canvas id="myGraph1" width="400" height="120" style="margin-right:1px;margin-top:-18px"></canvas> 
+			</div>
+			<hr style="height:0pt; visibility:hidden; margin-bottom:4px;" />
+			
+			<p style="display:inline;">Graph 2:</p> <input type="text" id="gData2" style="width:70px; margin-left:10px" />
+			<div align="center" id="gPanel2" style="margin-top: 0px; margin-left: -17px;"> <br>
+				<canvas id="myGraph2" width="400" height="120" style="margin-right:1px;margin-top:-18px"></canvas> 
+			</div>
+			<hr style="height:0pt; visibility:hidden; margin-bottom:4px;" />
+			
+			<p style="display:inline;">Graph 3:</p> <input type="text" id="gData3" style="width:70px; margin-left:10px" />
+			<div align="center" id="gPanel3" style="margin-top: 0px; margin-left: -17px;"> <br>
+				<canvas id="myGraph3" width="400" height="120" style="margin-right:1px;margin-top:-18px"></canvas> 
+			</div>		
+			<hr style="height:0pt; visibility:hidden; margin-bottom:4px;" />
+		
+		</div>
+	</div>
+ </div>
+
+ <div id="wPanel">
+	<div id="accordion" style="width:358px">
+		<h3>Data Gauges</h3>
+		<div style="padding-left:16px; padding-top:5px">
+			<canvas id="gauge1"></canvas> 
+			<canvas id="gauge2"></canvas> 
+			<canvas id="gauge3"></canvas> 
+			<canvas id="gauge4"></canvas> 
+			<canvas id="gauge5"></canvas> 
+			<canvas id="gauge6"></canvas> 
+		</div>
+		<h3>Data to MCU</h3>
+			<div style="padding-left:30px; padding-bottom:37px;">
+				<hr style="height:0pt; visibility:hidden; margin-bottom:0px;" />
+				<p style="color:blue">Switch Output:</p>
+				<div id = "btnHolder">
+					<input type = "checkbox" id = "check1" value = "toggle"/><label for = "check1">0</label>
+					<input type = "checkbox" id = "check2" value = "toggle"/><label for = "check2">1</label>
+					<input type = "checkbox" id = "check3" value = "toggle"/><label for = "check3">2</label>
+					<input type = "checkbox" id = "check4" value = "toggle"/><label for = "check4">3</label>
+					<input type = "checkbox" id = "check5" value = "toggle"/><label for = "check5">4</label>
+					<br>
+					<hr style="height:0pt; visibility:hidden; margin-bottom:0px;" />
+					<input type = "checkbox" id = "check6" value = "toggle"/><label for = "check6">5</label>
+					<input type = "checkbox" id = "check7" value = "toggle"/><label for = "check7">6</label>
+					<input type = "checkbox" id = "check8" value = "toggle"/><label for = "check8">7</label>
+					<input type = "checkbox" id = "check9" value = "toggle"/><label for = "check9">8</label>
+					<input type = "checkbox" id = "check10" value = "toggle"/><label for = "check10">9</label>
+				</div>
+				<br>
+				<hr style="height:0pt; visibility:hidden; margin-bottom:2px;" />
+				
+				<p style="display:inline; color:blue">PWM Output: #0</p> 
+				<hr style="height:0pt; visibility:hidden; margin-bottom:0px;" />
+					<table>
+					<tr>
+					  <td><input type="text" id="sliderTxt" style="width:45px; margin-left:=-10px; text-align:center"/></td>
+					  <td><div id="slider" style="width:212px; margin-left:23px"></div></td>		
+					</tr>
+					</table>
+				
+				<br>
+				<p style="display:inline; color:blue">PWM Output: #1</p>
+				<hr style="height:0pt; visibility:hidden; margin-bottom:0px;" />
+					<table>
+					<tr>
+					  <td><input type="text" id="sliderTxt2" style="width:45px; margin-left:=-10px; text-align:center"/></td>
+					  <td><div id="slider2" style="width:212px; margin-left:23px"></div></td>		
+					</tr>
+					</table>
+				
+				<br>
+				<p style="display:inline; color:blue">PWM Output: #2</p>
+				<hr style="height:0pt; visibility:hidden; margin-bottom:0px;" />
+					<table>
+					<tr>
+					  <td><input type="text" id="sliderTxt3" style="width:45px; margin-left:=-10px; text-align:center"/></td>
+					  <td><div id="slider3" style="width:212px; margin-left:23px"></div></td>		
+					</tr>
+					</table>
+			</div>
+		</div>
+	</div>		  
+</body>
+</html>
